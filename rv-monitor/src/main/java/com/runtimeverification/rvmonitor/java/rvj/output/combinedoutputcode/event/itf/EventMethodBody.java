@@ -1134,8 +1134,13 @@ public class EventMethodBody extends AdviceBody implements ICodeGenerator {
             stmts.add(new CodeVarDeclStmt(rlAgent, getAgentExpr));
 	    
 	    CodeMethodInvokeExpr decideAction = new CodeMethodInvokeExpr(CodeType.bool(),
-			    		        new CodeVarRefExpr(rlAgent), 
-			    		        "decideAction");
+						        new CodeVarRefExpr(rlAgent),
+						        "decideAction",
+                            CodeLiteralExpr.integer(this.event.getUniqueId().hashCode()),
+                            CodeExpr.fromLegacy(CodeType.integer(),
+                                    "System.identityHashCode(joinpoint.getSourceLocation().getWithinType())"),
+                            CodeExpr.fromLegacy(CodeType.integer(),
+                                    "System.identityHashCode(joinpoint.getSourceLocation())"));
             CodeNegExpr negDecideAction = new CodeNegExpr(decideAction);
 
 	    CodeStmtCollection clearAndReturn = new CodeStmtCollection();

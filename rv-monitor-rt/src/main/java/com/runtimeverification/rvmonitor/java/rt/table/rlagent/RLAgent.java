@@ -4,26 +4,39 @@ import com.runtimeverification.rvmonitor.java.rt.tablebase.AbstractMonitor;
 import java.lang.Math;
 import java.util.Random;
 import java.util.HashSet;
+import java.util.HashMap;
 
 public class RLAgent {
-    private double Qn;
-    private double Qc;
-    private double reward;
-    
-    private int numTotTraces = 0;
-    private int numDupTraces = 0;
+    private static final class ContextState {
+        private double Qn;
+        private double Qc;
+        private double reward;
+
+        private int numTotTraces;
+        private int numDupTraces;
+        private int timeStep;
+
+        private boolean converged;
+        private boolean convStatus;
+        private AbstractMonitor monitor;
+
+        private ContextState(double initc, double initn) {
+            this.Qc = initc;
+            this.Qn = initn;
+        }
+    }
 
     private double EPSILON;
     private double ALPHA; 
+    private double AUDIT_RATE = 0.05;
 
-    private AbstractMonitor monitor = null;
     private HashSet<Integer> uniqueTraces; 
-
-    private int timeStep = 0;
-
     private double THRESHOLD;
-    public boolean converged = false;
-    public boolean convStatus;
+    private double initc;
+    private double initn;
+
+    private HashMap<Integer, ContextState> contextStates = new HashMap<Integer, ContextState>();
+    private ContextState activeContext;
 
     public RLAgent(HashSet<Integer> uniqueTraces, 
 	double alpha, double epsilon, double threshold, double initc, double initn) {
@@ -33,59 +46,95 @@ public class RLAgent {
 	this.EPSILON = epsilon;
 	this.THRESHOLD = threshold;
 
-	this.Qc = initc;
-	this.Qn = initn;
+	this.initc = initc;
+	this.initn = initn;
     }
 
-    private void checkConverged() {
-	if (Math.abs(1.0 - Math.abs(Qc - Qn)) < THRESHOLD) {
-	    converged = true;
-	    convStatus = (Qn < Qc) ? true : false;
-	} 
+    private int contextHash(int eventHash, int typeHash, int sourceHash) {
+        int hash = 17;
+        hash = 31 * hash + eventHash;
+        hash = 31 * hash + typeHash;
+        hash = 31 * hash + sourceHash;
+        return hash;
     }
 
-    public boolean decideAction() { 
-	// Initial Action Selection 
-	if (timeStep++ == 0) {
-	    return true;
-	}
-	// Learning Converged 
-	if (converged) {
-	    return convStatus;
-	}
-	if (monitor != null) {
-	    numTotTraces++;
-	    if (!uniqueTraces.contains(monitor.traceVal)) {
-		uniqueTraces.add(monitor.traceVal);
-	        reward = 1.0;
-	    } else {
-		numDupTraces++;
-	        reward = 0.0;
-	    }
-	    Qc = Qc + ALPHA * (reward - Qc);
-	} else {
-	    reward = (double)numDupTraces/numTotTraces;
-	    Qn = Qn + ALPHA * (reward - Qn);
+    private ContextState getContextState(int contextHash) {
+        ContextState state = contextStates.get(contextHash);
+        if (state == null) {
+            state = new ContextState(initc, initn);
+            contextStates.put(contextHash, state);
         }
-	checkConverged();
-	
-	// Exploration Phase
-        if (!converged && Math.random() < EPSILON) {
-	    Random random = new Random();
-	    return random.nextBoolean();
-	} 	   
-	// Exploitation Phase
-	return (Qn <= Qc) ? true : false;
+        return state;
+    }
+
+    private void checkConverged(ContextState state) {
+	if (Math.abs(1.0 - Math.abs(state.Qc - state.Qn)) < THRESHOLD) {
+	    state.converged = true;
+	    state.convStatus = (state.Qn < state.Qc) ? true : false;
+	}
+    }
+
+    private void update(ContextState state) {
+        if (state == null || state.converged) {
+            return;
+        }
+	if (state.monitor != null) {
+	    state.numTotTraces++;
+	    if (!uniqueTraces.contains(state.monitor.traceVal)) {
+		uniqueTraces.add(state.monitor.traceVal);
+	        state.reward = 1.0;
+	    } else {
+		state.numDupTraces++;
+	        state.reward = 0.0;
+	    }
+	    state.Qc = state.Qc + ALPHA * (state.reward - state.Qc);
+	} else {
+	    state.reward = (double)state.numDupTraces / state.numTotTraces;
+	    state.Qn = state.Qn + ALPHA * (state.reward - state.Qn);
+        }
+	checkConverged(state);
+    }
+
+    public boolean decideAction(int eventHash, int typeHash, int sourceHash) {
+        update(activeContext);
+
+        ContextState state = getContextState(contextHash(eventHash, typeHash, sourceHash));
+        activeContext = state;
+	boolean create;
+	// Initial Action Selection
+	if (state.timeStep++ == 0) {
+            create = true;
+	} else if (state.converged) {
+	    create = state.convStatus;
+	} else if (Math.random() < EPSILON) {
+	    // Exploration Phase
+            Random random = new Random();
+	    create = random.nextBoolean();
+        } else {
+	    // Exploitation Phase
+            create = (state.Qn <= state.Qc);
+        }
+
+	// Persistent random auditing for skipped monitor creations.
+        if (!create && Math.random() < AUDIT_RATE) {
+            create = true;
+        }
+        return create;
     }
 
     public void setMonitor(AbstractMonitor monitor) {
-        this.monitor = monitor;
-	if (converged) {
+	if (activeContext == null) {
+	    return;
+	}
+	activeContext.monitor = monitor;
+	if (activeContext.converged) {
 	    monitor.recordEvents = false;
 	}
     }
 
     public void clearMonitor() {
-	this.monitor = null;
+	if (activeContext != null) {
+	    activeContext.monitor = null;
+	}
     }
 }
